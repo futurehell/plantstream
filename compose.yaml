@@ -1,0 +1,14 @@
+services:
+  plantstream:
+    build: .
+    container_name: plantstream
+    restart: unless-stopped
+
+    devices:
+      - /dev/dri:/dev/dri
+
+    volumes:
+      - ./:/config:ro
+
+    env_file:
+      - .env

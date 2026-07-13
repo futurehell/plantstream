@@ -1,0 +1,14 @@
+# secrets — NEVER commit (real keys/creds live here)
+.env
+
+# 18GB of third-party music — not ours to redistribute, and GitHub would reject it
+music/
+
+# runtime artifacts
+frame_now.png
+*.log
+/tmp/
+
+# OS cruft
+.DS_Store
+Thumbs.db

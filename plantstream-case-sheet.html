@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>plantstream — Case Sheet</title>
+<style>
+  :root{
+    --ink:#14161a; --muted:#5b626e; --line:#e4e7ec;
+    --accent:#2e8b57; --accent2:#8a6d1a; --bg:#ffffff; --chip:#f0f9f2;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#f2f3f6;color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;line-height:1.5}
+  .sheet{max-width:850px;margin:24px auto;background:var(--bg);
+    padding:44px 48px 40px;border-radius:14px;box-shadow:0 8px 40px rgba(20,22,26,.10)}
+  header{display:flex;justify-content:space-between;align-items:flex-start;
+    border-bottom:2px solid var(--ink);padding-bottom:16px;margin-bottom:22px}
+  h1{font-size:25px;margin:0 0 4px;letter-spacing:-.3px}
+  .tag{color:var(--accent);font-weight:700;text-transform:uppercase;
+    letter-spacing:1.5px;font-size:11px;margin:0}
+  .who{text-align:right;font-size:12px;color:var(--muted);line-height:1.6}
+  .who b{color:var(--ink)}
+  .lede{font-size:15px;color:#2a2e36;margin:0 0 26px;max-width:62ch}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:26px 40px}
+  h2{font-size:11px;text-transform:uppercase;letter-spacing:1.4px;
+    color:var(--accent2);margin:0 0 10px;font-weight:800}
+  ul{margin:0;padding:0;list-style:none}
+  li{position:relative;padding-left:16px;margin-bottom:8px;font-size:13.5px;color:#282c34}
+  li:before{content:"";position:absolute;left:0;top:8px;width:6px;height:6px;
+    border-radius:50%;background:var(--accent)}
+  li b{color:var(--ink)}
+  .full{grid-column:1 / -1}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}
+  .step{background:var(--chip);border:1px solid #d8ecdc;border-radius:8px;
+    padding:8px 12px;font-size:12.5px;flex:1;min-width:150px}
+  .step span{display:block;font-weight:800;color:var(--accent);font-size:11px;margin-bottom:2px}
+  .stack{display:flex;flex-wrap:wrap;gap:7px;margin-top:4px}
+  .pill{font-size:11.5px;background:#f4f5f7;border:1px solid var(--line);
+    border-radius:999px;padding:4px 11px;color:#3a3f48}
+  .fixes li:before{background:var(--accent2)}
+  .metrics{display:flex;gap:30px;margin:24px 0 4px;padding:16px 20px;
+    background:linear-gradient(90deg,#f4faf5,#fbf9ef);border-radius:10px;border:1px solid #e3efe4}
+  .metric b{display:block;font-size:22px;color:var(--accent);letter-spacing:-.5px}
+  .metric span{font-size:11.5px;color:var(--muted)}
+  footer{margin-top:26px;border-top:1px solid var(--line);padding-top:14px;
+    font-size:11px;color:var(--muted);display:flex;justify-content:space-between}
+  @media print{body{background:#fff}.sheet{box-shadow:none;margin:0;border-radius:0;max-width:none}}
+  @media(max-width:640px){.grid{grid-template-columns:1fr}.metrics{flex-wrap:wrap;gap:16px}header{flex-direction:column;gap:8px}.who{text-align:left}}
+</style>
+</head>
+<body>
+<div class="sheet">
+  <header>
+    <div>
+      <p class="tag">Infrastructure · Live Video · 24/7</p>
+      <h1>plantstream: an unkillable plant cam broadcast</h1>
+    </div>
+    <div class="who">
+      <b>Engagement type</b><br>Streaming appliance build<br>
+      <b>Platform</b><br>Debian VM · Docker · FFmpeg
+    </div>
+  </header>
+
+  <p class="lede">
+    An IP camera pointed at houseplants, a lofi soundtrack, and a virtual machine that
+    never asks for attention: plantstream composites the camera feed in a headless
+    browser, encodes it at broadcast-steady constant bitrate, and streams to YouTube
+    around the clock — detecting and healing its own failures, because the only thing
+    slower than the plants should be the pager.
+  </p>
+
+  <div class="metrics">
+    <div class="metric"><b>24/7</b><span>live, unattended for months</span></div>
+    <div class="metric"><b>60s</b><span>to detect a stalled feed</span></div>
+    <div class="metric"><b>1</b><span>container, one command to deploy</span></div>
+    <div class="metric"><b>0</b><span>monitors, GUIs, or babysitters</span></div>
+  </div>
+
+  <div class="grid">
+    <section>
+      <h2>The challenge</h2>
+      <ul>
+        <li>The camera page <b>stalls silently</b> — the video element freezes to black while everything else looks healthy, and nobody is watching a plant cam closely enough to notice.</li>
+        <li>Nearly-static content makes encoders <b>undershoot bitrate</b>, tripping platform ingest warnings and stalling stream startup.</li>
+        <li>Headless box, no display, no desktop — yet the feed needs a real browser to render, and everything must survive reboots.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>The solution</h2>
+      <ul>
+        <li>Xvfb + Chromium in kiosk mode render the camera page on a <b>virtual display</b>; FFmpeg captures it with x11grab and mixes a looping music playlist.</li>
+        <li>A <b>luma-sampling watchdog</b> crops the camera region once a minute; consecutive dark frames trigger a browser reload and the stream self-heals mid-broadcast.</li>
+        <li><b>True CBR encoding</b> (VBV + nal-hrd) pads the motionless scene to a constant 6800 Kbps, so ingest sees a rock-steady feed regardless of how little the plants do.</li>
+      </ul>
+    </section>
+
+    <section class="full">
+      <h2>How the broadcast runs</h2>
+      <div class="flow">
+        <div class="step"><span>1 · CAPTURE</span>Chromium renders the cam page on a headless virtual display</div>
+        <div class="step"><span>2 · WATCH</span>Watchdog samples frame luma every 60s; black feed → reload</div>
+        <div class="step"><span>3 · ENCODE</span>1080p30 CBR video + looping lofi playlist, mixed in FFmpeg</div>
+        <div class="step"><span>4 · BROADCAST</span>RTMP to YouTube; the encoder restarts itself forever</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Engineering highlights</h2>
+      <ul>
+        <li>Black-frame detection built from stock FFmpeg — <b>signalstats luma averaging</b> over a cropped sample box, no extra dependencies.</li>
+        <li>The critical encoder runs as the container's <b>main process</b> under restart-unless-stopped: one supervision tree, no orphans.</li>
+        <li>Stale X locks and orphaned processes cleaned on every boot, so crash loops can't wedge the display.</li>
+        <li>All tunables (<b>check cadence, darkness threshold, sample crop</b>) are env config — field-adjustable without an image rebuild.</li>
+      </ul>
+    </section>
+
+    <section class="fixes">
+      <h2>Solved during the build</h2>
+      <ul>
+        <li><b>Platform exit</b> — removed a second streaming destination cleanly; the surviving encoder gained its freed CPU.</li>
+        <li><b>Ingest warm-up stalls</b> — "preparing stream" limbo traced to bitrate undershoot on static scenes; fixed with padded CBR.</li>
+        <li><b>Silent camera death</b> — the stream now notices its own black feed and recovers without a human ever seeing it.</li>
+        <li><b>Reboot fragility</b> — display locks, process cleanup, and container restart policy make power loss a non-event.</li>
+      </ul>
+    </section>
+
+    <section class="full">
+      <h2>Stack</h2>
+      <div class="stack">
+        <span class="pill">Debian 12</span>
+        <span class="pill">Docker Compose</span>
+        <span class="pill">FFmpeg / libx264 CBR</span>
+        <span class="pill">Xvfb (headless X)</span>
+        <span class="pill">Chromium kiosk</span>
+        <span class="pill">x11grab capture</span>
+        <span class="pill">signalstats watchdog</span>
+        <span class="pill">RTMP / FLV</span>
+        <span class="pill">H.264 IP camera</span>
+        <span class="pill">bash supervision</span>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <span>plantstream · broadcast appliance case sheet</span>
+    <span>Available for similar streaming &amp; Linux automation work</span>
+  </footer>
+</div>
+</body>
+</html>

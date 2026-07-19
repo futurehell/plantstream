@@ -9,6 +9,19 @@
 # Hardened: a watchdog samples the camera region every minute; if it goes black
 # (the video element stalled), it reloads Chromium so the stream self-heals.
 # The camera is H.264, so software decode (--disable-gpu) is correct and stable.
+#
+# UPLINK WATCHDOG (added 2026-07-19 after a silent outage): the display-based
+# watchdog above only ever proves CHROMIUM is healthy — it cannot see whether
+# bytes are actually reaching YouTube. Observed failure: ffmpeg kept running but
+# stopped pushing RTMP (blocked on a dead socket, no timeout on the output), so
+# YouTube saw no data and ended the broadcast while the virtual display looked
+# perfect. Because ffmpeg never EXITED, `restart: unless-stopped` never fired and
+# the stream stayed dark until a manual `docker restart`.
+#
+# Fix: ffmpeg now writes -progress to $PROGRESS_FILE, and a second watchdog
+# verifies out_time_ms keeps ADVANCING. A stall kills ffmpeg — which is PID 1,
+# so the container exits and Docker restarts it clean, reconnecting to YouTube
+# on its own. This catches ANY stall cause, not just socket timeouts.
 set -e
 
 # ── watchdog tunables (override in .env) ─────────────────────────────────────
@@ -19,6 +32,18 @@ CAM_CROP="${CAM_CROP:-600:400:428:285}"  # WxH:X:Y sample box inside the camera 
 FREEZE_HITS="${FREEZE_HITS:-3}"       # consecutive byte-identical frames before reloading
                                       # (live cam feeds always differ via sensor noise,
                                       #  so identical frames == genuinely stalled render)
+MIN_FRAME_BYTES="${MIN_FRAME_BYTES:-800000}"  # a live 1080p camera frame PNG-compresses to
+                                      # 2-3 MB; a loading spinner / blank / error page is
+                                      # tiny. Frames under this = "not showing video".
+BLANK_HITS="${BLANK_HITS:-3}"         # consecutive tiny frames before reloading
+
+# ── uplink watchdog tunables (override in .env) ──────────────────────────────
+PROGRESS_FILE="${PROGRESS_FILE:-/tmp/ffprogress.txt}"  # ffmpeg -progress target
+UPLINK_CHECK_SECS="${UPLINK_CHECK_SECS:-15}"  # how often to verify the uplink advanced
+UPLINK_STALL_SECS="${UPLINK_STALL_SECS:-60}"  # no progress for this long = dead uplink.
+                                      # Generous: brief RTMP hiccups self-heal, and a
+                                      # container restart costs a reconnect, so we only
+                                      # act on a genuine stall.
 
 launch_chromium() {
   chromium \
@@ -54,10 +79,11 @@ sleep 8
 #     *lit* still frame on screen, so ffmpeg streams a frozen picture forever.
 #     Live camera feeds always jitter (sensor noise), so identical frames are a
 #     reliable "nothing is updating" signal — no false positives on slow plants.
-echo ">>> Starting feed watchdog (every ${CHECK_SECS}s: black<${BLACK_LEVEL} crop ${CAM_CROP}, freeze x${FREEZE_HITS})..."
+echo ">>> Starting feed watchdog (every ${CHECK_SECS}s: black<${BLACK_LEVEL}, freeze x${FREEZE_HITS}, blank<${MIN_FRAME_BYTES}B x${BLANK_HITS})..."
 (
   black_hits=0
   freeze_hits=0
+  blank_hits=0
   last_md5=""
   sleep 30   # let the page settle before the first check
   while true; do
@@ -69,10 +95,12 @@ echo ">>> Starting feed watchdog (every ${CHECK_SECS}s: black<${BLACK_LEVEL} cro
     lum=$(grep -oE 'YAVG=[0-9]+' /tmp/lum.txt 2>/dev/null | head -1 | cut -d= -f2)
     lum=${lum:-255}
 
-    # freeze detector: md5 of the full captured frame
-    frame_md5=$(ffmpeg -hide_banner -loglevel error \
+    # one full-frame PNG grab feeds BOTH the freeze (md5) and blank (size) checks
+    ffmpeg -hide_banner -loglevel error \
       -f x11grab -video_size 1920x1080 -i :99 -frames:v 1 \
-      -f md5 - 2>/dev/null | sed -n 's/^MD5=//p')
+      -f image2 -y /tmp/frame.png 2>/dev/null || true
+    frame_md5=$(md5sum /tmp/frame.png 2>/dev/null | cut -d' ' -f1)
+    frame_bytes=$(stat -c%s /tmp/frame.png 2>/dev/null || echo 999999999)
 
     reason=""
 
@@ -93,15 +121,74 @@ echo ">>> Starting feed watchdog (every ${CHECK_SECS}s: black<${BLACK_LEVEL} cro
     fi
     last_md5="$frame_md5"
 
+    # blank detector: a loading spinner / error page compresses tiny.
+    # Catches the "3s loading loop" the md5+black checks sleep through
+    # (the spinner animates, so md5 keeps changing, and it isn't dark).
+    if [ "$frame_bytes" -lt "$MIN_FRAME_BYTES" ]; then
+      blank_hits=$((blank_hits + 1))
+      echo "$(date) [watchdog] frame blank/loading (${frame_bytes}B) ${blank_hits}/${BLANK_HITS}"
+      [ "$blank_hits" -ge "$BLANK_HITS" ] && reason="blank"
+    else
+      blank_hits=0
+    fi
+
     if [ -n "$reason" ]; then
       echo "$(date) [watchdog] feed ${reason} — reloading Chromium"
       pkill -9 chromium 2>/dev/null || true
       sleep 2
       launch_chromium
-      black_hits=0; freeze_hits=0; last_md5=""
+      black_hits=0; freeze_hits=0; blank_hits=0; last_md5=""
       sleep 20   # give it time to reload before sampling again
     fi
     sleep "$CHECK_SECS"
+  done
+) &
+
+# ── uplink watchdog: restart the container if ffmpeg stops PUSHING ──────────
+# The display watchdog above proves Chromium is drawing; this one proves the
+# stream is actually leaving the box. ffmpeg's -progress block appends
+# `out_time_ms=<n>` roughly once a second while it is genuinely muxing. If that
+# number stops advancing (socket wedged, encoder deadlocked, YouTube dropped us)
+# we kill ffmpeg. It is PID 1, so the container exits and Docker's
+# `restart: unless-stopped` brings it straight back with a fresh RTMP session.
+#
+# Note it waits for the file to appear first: ffmpeg starts AFTER this loop, and
+# a missing file at boot is normal, not a stall.
+echo ">>> Starting uplink watchdog (stall = no ffmpeg progress for ${UPLINK_STALL_SECS}s)..."
+(
+  rm -f "${PROGRESS_FILE}" 2>/dev/null || true
+  last_out=""
+  last_change=$(date +%s)
+  started=0
+  while true; do
+    sleep "${UPLINK_CHECK_SECS}"
+
+    # out_time_ms is appended repeatedly; the LAST one is the current position.
+    out=$(grep -a '^out_time_ms=' "${PROGRESS_FILE}" 2>/dev/null | tail -1 | cut -d= -f2)
+
+    if [ -z "$out" ]; then
+      # No progress data yet. Before ffmpeg's first write that's just startup;
+      # after it, treat a vanished/empty file as a stall via the same timer.
+      [ "$started" -eq 0 ] && continue
+    else
+      started=1
+    fi
+
+    now=$(date +%s)
+    if [ -n "$out" ] && [ "$out" != "$last_out" ]; then
+      last_out="$out"
+      last_change=$now
+      continue
+    fi
+
+    stalled=$(( now - last_change ))
+    if [ "$stalled" -ge "${UPLINK_STALL_SECS}" ]; then
+      echo "$(date) [uplink] NO PROGRESS for ${stalled}s (out_time_ms stuck at ${last_out:-none})"
+      echo "$(date) [uplink] killing ffmpeg — container will restart and reconnect"
+      pkill -9 -f 'ffmpeg.*rtmp://' 2>/dev/null || true
+      exit 0
+    fi
+    echo "$(date) [uplink] no progress for ${stalled}s (limit ${UPLINK_STALL_SECS}s)"
   done
 ) &
 
@@ -123,4 +210,6 @@ exec ffmpeg \
   -x264-params "nal-hrd=cbr:force-cfr=1" \
   -pix_fmt yuv420p -g 60 \
   -c:a aac -b:a 128k -ar 44100 -ac 2 \
+  -rw_timeout 20000000 \
+  -progress "${PROGRESS_FILE}" \
   -f flv "rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_KEY}"

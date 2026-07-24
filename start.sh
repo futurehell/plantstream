@@ -198,10 +198,20 @@ echo ">>> Starting uplink watchdog (stall = no ffmpeg progress for ${UPLINK_STAL
 # warnings).  nal-hrd=cbr pads the encode to a constant 6800k so YT gets
 # the steady feed it recommends.  CPU headroom came free with the Twitch
 # encoder's departure.
+
+# Audio: looped playlist if one is mounted, otherwise silence (YouTube
+# requires an audio track, so a missing music/ must not kill the stream).
+if [ -f /config/music/playlist.txt ]; then
+  AUDIO_IN=(-thread_queue_size 1024 -stream_loop -1 -f concat -safe 0 -i /config/music/playlist.txt)
+else
+  echo ">>> No /config/music/playlist.txt — streaming with silent audio"
+  AUDIO_IN=(-f lavfi -i "anullsrc=r=44100:cl=stereo")
+fi
+
 echo ">>> Starting FFmpeg stream (YouTube)..."
 exec ffmpeg \
   -thread_queue_size 1024 -f x11grab -draw_mouse 0 -r 30 -s 1920x1080 -i :99 \
-  -thread_queue_size 1024 -stream_loop -1 -f concat -safe 0 -i /config/music/playlist.txt \
+  "${AUDIO_IN[@]}" \
   -filter_complex "[0:v]scale=1920:1080,fps=30,format=yuv420p[v]" \
   -map "[v]" \
   -map "1:a" \

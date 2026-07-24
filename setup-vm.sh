@@ -15,14 +15,9 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.
 apt update
 apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 
-echo ">>> Adding erik to docker group..."
-usermod -aG docker erik
-
-echo ">>> Installing Intel Arc / QSV drivers..."
-apt install -y intel-media-va-driver-non-free libvpl2 vainfo
-
-echo ">>> Verifying GPU access..."
-vainfo || echo "WARNING: vainfo failed — check /dev/dri passthrough in Proxmox"
+DOCKER_USER="${SUDO_USER:-$USER}"
+echo ">>> Adding ${DOCKER_USER} to docker group..."
+usermod -aG docker "${DOCKER_USER}"
 
 echo ""
 echo "=== Done! ==="

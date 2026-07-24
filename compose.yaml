@@ -4,11 +4,8 @@ services:
     container_name: plantstream
     restart: unless-stopped
 
-    devices:
-      - /dev/dri:/dev/dri
-
     volumes:
-      - ./:/config:ro
+      - ./music:/config/music:ro
 
     env_file:
       - .env
